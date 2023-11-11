@@ -48,7 +48,7 @@ namespace LogAnalizerApp.LogProcessor
             _ipHitCounts.Clear();
             var stopwatch = Stopwatch.StartNew();
 
-            await ProcessLogEntries(filePath);
+            await ProcessLogEntriesAsync(filePath);
 
             stopwatch.Stop();
             Console.WriteLine($"\nProcessing completed  in {stopwatch.Elapsed}");
@@ -57,10 +57,10 @@ namespace LogAnalizerApp.LogProcessor
         }
 
         /// <summary>
-        /// Processes log entries, counting IP hits and queuing IPs for DNS resolution.
+        /// Processes log entries asynchronously, counting IP hits and queuing IPs for DNS resolution.
         /// </summary>
         /// <param name="filePath">The path to the log file.</param>
-        private async Task ProcessLogEntries(string filePath)
+        private async Task ProcessLogEntriesAsync(string filePath)
         {
             var tasks = new List<Task>();
             var fileLength = new FileInfo(filePath).Length;
@@ -122,7 +122,7 @@ namespace LogAnalizerApp.LogProcessor
                         completeBuffer = buffer;
                     }
 
-                    tasks.Add(Task.Run(() => ProcessChunkAsync(completeBuffer)));
+                    tasks.Add(Task.Run(() => ProcessChunk(completeBuffer)));
 
                     // Move to the next chunk, adjusting for the line boundary
                     position += completeBuffer.Length;
@@ -154,10 +154,10 @@ namespace LogAnalizerApp.LogProcessor
         }
 
         /// <summary>
-        /// Processes a chunk of the log file asynchronously to count IP hits.
+        /// Processes a chunk of the log file to count IP hits.
         /// </summary>
         /// <param name="buffer">The byte array containing a chunk of the log file.</param>
-        private void ProcessChunkAsync(byte[] buffer)
+        private void ProcessChunk(byte[] buffer)
         {
             // Convert the byte array to a string, then split into lines
             var text = Encoding.UTF8.GetString(buffer);
@@ -175,7 +175,7 @@ namespace LogAnalizerApp.LogProcessor
                     if (_ipResolvedAddress.TryAdd(ip, null))
                     {
                         // We don't wait for it because it can take significantly more time than counting hits.
-                        Task.Run(() => ResolveIP(ip));
+                        Task.Run(() => ResolveIPAsync(ip));
                     }
                 }
             }
@@ -185,7 +185,7 @@ namespace LogAnalizerApp.LogProcessor
         /// Resolves an IP address to its corresponding hostname asynchronously and updates the resolved addresses dictionary.
         /// </summary>
         /// <param name="ip">The IP address to resolve.</param>
-        private async Task ResolveIP(string ip)
+        private async Task ResolveIPAsync(string ip)
         {
             // Perform the DNS resolution and update the _resolvedIPs dictionary.
             var hostname = await _dnsResolver.ResolveIPToHostnameAsync(ip);
