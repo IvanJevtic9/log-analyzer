@@ -1,7 +1,7 @@
 ﻿namespace LogAnalizerApp.Enums
 {
     /// <summary>
-    /// 
+    /// Defines various sizes for data chunks to be used in log file processing.
     /// </summary>
     public enum ChunkSize
     {
