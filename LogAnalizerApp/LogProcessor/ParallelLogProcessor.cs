@@ -51,7 +51,7 @@ namespace LogAnalizerApp.LogProcessor
             await ProcessLogEntries(filePath);
 
             stopwatch.Stop();
-            Console.WriteLine($"Processing completed  in {stopwatch.Elapsed}\n");
+            Console.WriteLine($"\nProcessing completed  in {stopwatch.Elapsed}");
 
             _isRunning = false;
         }
@@ -80,26 +80,52 @@ namespace LogAnalizerApp.LogProcessor
                     int bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
 
                     // Find the last new line in the buffer
-                    int lastNewLine = Array.LastIndexOf(buffer, (byte)'\n', bytesRead - 1);
-                    if (lastNewLine == -1)
+                    byte[] completeBuffer;
+                    int lastNewLine = Array.LastIndexOf(buffer, (byte)'\n');
+
+                    // No newline found and there's still data to read
+                    if (lastNewLine == -1 && bytesRead == nextChunkSize)
                     {
-                        // if not found , it means that the chunk size was perfect.
-                        lastNewLine = bytesRead;
+                        // Continue reading until the next newline
+                        using (var memoryStream = new MemoryStream())
+                        {
+                            // Write the current buffer to the memory stream
+                            memoryStream.Write(buffer, 0, bytesRead);
+
+                            // Continue reading byte by byte until a newline is found
+                            byte[] singleByte = new byte[1];
+                            while (await stream.ReadAsync(singleByte, 0, 1) > 0)
+                            {
+                                memoryStream.Write(singleByte, 0, 1);
+                                if (singleByte[0] == '\n')
+                                {
+                                    // Newline found, break out of the loop
+                                    break;
+                                }
+                            }
+
+                            // Retrieve the complete buffer including the newline
+                            completeBuffer = memoryStream.ToArray();
+                        }
                     }
-                    else
+                    else if (lastNewLine != -1)
                     {
                         // Include the newline character in the current chunk
                         lastNewLine++;
+                        completeBuffer = new byte[lastNewLine];
+                        Array.Copy(buffer, completeBuffer, lastNewLine);
                     }
-
-                    // Process the chunk asynchronously up to the last complete line
-                    byte[] completeBuffer = new byte[lastNewLine];
-                    Array.Copy(buffer, completeBuffer, lastNewLine);
+                    else
+                    {
+                        // The buffer is smaller than the chunk size and no newline found, 
+                        // use the buffer as is because it represents the end of the file
+                        completeBuffer = buffer;
+                    }
 
                     tasks.Add(Task.Run(() => ProcessChunkAsync(completeBuffer)));
 
                     // Move to the next chunk, adjusting for the line boundary
-                    position += lastNewLine;
+                    position += completeBuffer.Length;
                 }
             }
 
