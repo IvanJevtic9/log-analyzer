@@ -11,7 +11,7 @@ namespace LogAnalizerApp
 
         public static async Task Main(string[] args)
         {
-            var logProcessor = new ParallelLogProcessor();
+            var logProcessor = new ParallelLogProcessor(Enums.ChunkSize.Small);
 
             // Example 1
             // IP hits are removed every time we start analyzing while dns collection no.
@@ -19,7 +19,7 @@ namespace LogAnalizerApp
 
             logProcessor.DisplayIPAnalysisResults();
 
-            Thread.Sleep(5000);
+            Thread.Sleep(8000);
 
             logProcessor.DisplayIPAnalysisResults();
 
@@ -32,10 +32,7 @@ namespace LogAnalizerApp
 
             logProcessor.DisplayIPAnalysisResults();
 
-            Thread.Sleep(5000);
-            logProcessor.DisplayIPAnalysisResults();
-
-            Thread.Sleep(20000);
+            Thread.Sleep(8000);
             logProcessor.DisplayIPAnalysisResults();
         }
     }

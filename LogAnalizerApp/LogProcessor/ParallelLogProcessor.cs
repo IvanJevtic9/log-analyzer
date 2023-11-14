@@ -39,6 +39,8 @@ namespace LogAnalizerApp.LogProcessor
                 return;
             }
 
+            _isRunning = true;
+
             if (!File.Exists(filePath))
             {
                 Console.WriteLine("Invalid file path.");
@@ -48,89 +50,13 @@ namespace LogAnalizerApp.LogProcessor
             _ipHitCounts.Clear();
             var stopwatch = Stopwatch.StartNew();
 
-            await ProcessLogEntriesAsync(filePath);
+            var blocks = await SplitIntoBlocksAsync(filePath);
+            await ProcessBlocksAsync(blocks);
 
             stopwatch.Stop();
             Console.WriteLine($"\nProcessing completed  in {stopwatch.Elapsed}");
 
             _isRunning = false;
-        }
-
-        /// <summary>
-        /// Processes log entries asynchronously, counting IP hits and queuing IPs for DNS resolution.
-        /// </summary>
-        /// <param name="filePath">The path to the log file.</param>
-        private async Task ProcessLogEntriesAsync(string filePath)
-        {
-            var tasks = new List<Task>();
-            var fileLength = new FileInfo(filePath).Length;
-
-            using (var stream = File.OpenRead(filePath))
-            {
-                long position = 0;
-
-                while (position < fileLength)
-                {
-                    // Calculate the size of the chunk to read
-                    var nextChunkSize = Math.Min(_chunkSize, fileLength - position);
-
-                    // Read the chunk asynchronously
-                    byte[] buffer = new byte[nextChunkSize];
-                    stream.Seek(position, SeekOrigin.Begin);
-                    int bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
-
-                    // Find the last new line in the buffer
-                    byte[] completeBuffer;
-                    int lastNewLine = Array.LastIndexOf(buffer, (byte)'\n');
-
-                    // No newline found and there's still data to read
-                    if (lastNewLine == -1 && bytesRead == nextChunkSize)
-                    {
-                        // Continue reading until the next newline
-                        using (var memoryStream = new MemoryStream())
-                        {
-                            // Write the current buffer to the memory stream
-                            memoryStream.Write(buffer, 0, bytesRead);
-
-                            // Continue reading byte by byte until a newline is found
-                            byte[] singleByte = new byte[1];
-                            while (await stream.ReadAsync(singleByte, 0, 1) > 0)
-                            {
-                                memoryStream.Write(singleByte, 0, 1);
-                                if (singleByte[0] == '\n')
-                                {
-                                    // Newline found, break out of the loop
-                                    break;
-                                }
-                            }
-
-                            // Retrieve the complete buffer including the newline
-                            completeBuffer = memoryStream.ToArray();
-                        }
-                    }
-                    else if (lastNewLine != -1)
-                    {
-                        // Include the newline character in the current chunk
-                        lastNewLine++;
-                        completeBuffer = new byte[lastNewLine];
-                        Array.Copy(buffer, completeBuffer, lastNewLine);
-                    }
-                    else
-                    {
-                        // The buffer is smaller than the chunk size and no newline found, 
-                        // use the buffer as is because it represents the end of the file
-                        completeBuffer = buffer;
-                    }
-
-                    tasks.Add(Task.Run(() => ProcessChunk(completeBuffer)));
-
-                    // Move to the next chunk, adjusting for the line boundary
-                    position += completeBuffer.Length;
-                }
-            }
-
-            // Wait for all processing task to complete
-            await Task.WhenAll(tasks);
         }
 
         /// <summary>
@@ -154,27 +80,142 @@ namespace LogAnalizerApp.LogProcessor
         }
 
         /// <summary>
-        /// Processes a chunk of the log file to count IP hits.
+        /// Splits the log file into blocks, with each block containing lines from one '#Fields' declaration to the next.
         /// </summary>
-        /// <param name="buffer">The byte array containing a chunk of the log file.</param>
-        private void ProcessChunk(byte[] buffer)
+        /// <param name="filePath">The path to the log file.</param>
+        /// <returns>A list of log file blocks, each as a string.</returns>
+        private async Task<List<string>> SplitIntoBlocksAsync(string filePath)
         {
-            // Convert the byte array to a string, then split into lines
-            var text = Encoding.UTF8.GetString(buffer);
-            var lines = text.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None);
+            var blocks = new List<string>();
+            var currentBlock = new StringBuilder();
 
-            // Process each line 
+            using (var reader = new StreamReader(filePath))
+            {
+                string line;
+                bool isNewBlock = false;
+
+                while ((line = await reader.ReadLineAsync()) != null)
+                {
+                    if (line.StartsWith("#Fields"))
+                    {
+                        if (isNewBlock)
+                        {
+                            blocks.Add(currentBlock.ToString());
+                            currentBlock.Clear();
+                        }
+                        isNewBlock = true;
+                    }
+                    if (isNewBlock)
+                    {
+                        currentBlock.AppendLine(line);
+                    }
+                }
+
+                if (currentBlock.Length > 0)
+                {
+                    blocks.Add(currentBlock.ToString());
+                }
+            }
+
+            return blocks;
+        }
+
+        /// <summary>
+        /// Processes each block of log entries in parallel. Each block is expected to start with a '#Fields' line followed by log entries.
+        /// </summary>
+        /// <param name="blocks">The collection of log file blocks to process.</param>
+        /// <returns>A Task representing the asynchronous operation of processing all blocks.</returns>
+        private async Task ProcessBlocksAsync(IEnumerable<string> blocks)
+        {
+            var processingTasks = new List<Task>();
+
+            foreach (var block in blocks)
+            {
+                processingTasks.Add(Task.Run(() => ProcessBlock(block)));
+            }
+
+            await Task.WhenAll(processingTasks);
+        }
+
+        /// <summary>
+        /// Processes a single block of log entries. The method partitions the block into chunks and processes each chunk in parallel.
+        /// </summary>
+        /// <param name="block">A string representing the block of log entries to process.</param>
+        private void ProcessBlock(string block)
+        {
+            var lines = block.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.RemoveEmptyEntries);
+
+            // Assume the first line is the #Fields line
+            var ipAddressPosition = Array.IndexOf(lines[0].Split(' '), "c-ip") - 1;
+
+            // Partition the lines into chunks based on the desired chunk size
+            var chunks = PartitionIntoChunks(lines.Skip(1), _chunkSize); // Skip the #Fields line
+
+            // Define parallel options
+            var parallelOptions = new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount };
+
+            // Process each chunk in parallel
+            Parallel.ForEach(chunks, parallelOptions, chunk =>
+            {
+                ProcessChunk(chunk.ToArray(), ipAddressPosition);
+            });
+        }
+
+        /// <summary>
+        /// Partitions a sequence of log entries into chunks of approximately equal size in bytes.
+        /// </summary>
+        /// <param name="lines">The sequence of log entries to partition.</param>
+        /// <param name="chunkSizeInBytes">The target size for each chunk, in bytes.</param>
+        /// <returns>An enumerable of string enumerables, where each inner enumerable represents a chunk of log entries.</returns>
+        private IEnumerable<IEnumerable<string>> PartitionIntoChunks(IEnumerable<string> lines, int chunkSizeInBytes)
+        {
+            int currentChunkSize = 0;
+            var currentChunk = new List<string>();
+
             foreach (var line in lines)
             {
-                if (!string.IsNullOrWhiteSpace(line) && !line.StartsWith("#"))
+                int lineSize = Encoding.UTF8.GetByteCount(line + Environment.NewLine);
+
+                if (currentChunkSize + lineSize > chunkSizeInBytes && currentChunk.Any())
                 {
-                    string ip = line.Split(' ')[2];
+                    // Current chunk is full, yield return and start a new chunk
+                    yield return currentChunk;
+                    currentChunk = new List<string>();
+                    currentChunkSize = 0;
+                }
+
+                // Add the line to the current chunk and update the size
+                currentChunk.Add(line);
+                currentChunkSize += lineSize;
+            }
+
+            // Yield the last chunk if it has any lines
+            if (currentChunk.Any())
+            {
+                yield return currentChunk;
+            }
+        }
+
+        /// <summary>
+        /// Processes a chunk of log entries, updating the count of IP address hits.
+        /// </summary>
+        /// <param name="chunk">An array of log entry strings that constitute a chunk.</param>
+        /// <param name="ipAddressPosition">The position of the IP address within a log entry.</param>
+        private void ProcessChunk(string[] chunk, int ipAddressPosition)
+        {
+            foreach (var line in chunk)
+            {
+                if (string.IsNullOrWhiteSpace(line) || line.StartsWith("#")) continue;
+
+                var entries = line.Split(' ');
+                if (entries.Length > ipAddressPosition)
+                {
+                    string ip = entries[ipAddressPosition];
                     _ipHitCounts.AddOrUpdate(ip, 1, (key, oldValue) => oldValue + 1);
 
-                    // If the IP was not in the dictionary, we start a new task to resolve it. 
+                    // If the IP was not in the dictionary, we start a new task to resolve it.
                     if (_ipResolvedAddress.TryAdd(ip, null))
                     {
-                        // We don't wait for it because it can take significantly more time than counting hits.
                         Task.Run(() => ResolveIPAsync(ip));
                     }
                 }
