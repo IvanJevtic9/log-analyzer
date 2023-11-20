@@ -50,7 +50,7 @@ namespace LogAnalizerApp.LogProcessor
             _ipHitCounts.Clear();
             var stopwatch = Stopwatch.StartNew();
 
-            var blocks = await SplitIntoBlocksAsync(filePath);
+            var blocks = GenerateBlocksAsync(filePath);
             await ProcessBlocksAsync(blocks);
 
             stopwatch.Stop();
@@ -80,44 +80,35 @@ namespace LogAnalizerApp.LogProcessor
         }
 
         /// <summary>
-        /// Splits the log file into blocks, with each block containing lines from one '#Fields' declaration to the next.
+        /// Generates blocks of log entries, each block starting from a '#Fields' declaration to the next, using an iterator.
         /// </summary>
         /// <param name="filePath">The path to the log file.</param>
-        /// <returns>A list of log file blocks, each as a string.</returns>
-        private async Task<List<string>> SplitIntoBlocksAsync(string filePath)
+        /// <returns>An iterator over the blocks of the log file.</returns>
+        private IEnumerable<string> GenerateBlocksAsync(string filePath)
         {
-            var blocks = new List<string>();
-            var currentBlock = new StringBuilder();
-
             using (var reader = new StreamReader(filePath))
             {
                 string line;
-                bool isNewBlock = false;
-
-                while ((line = await reader.ReadLineAsync()) != null)
+                var currentBlock = new StringBuilder();
+                while ((line = reader.ReadLine()) != null)
                 {
                     if (line.StartsWith("#Fields"))
                     {
-                        if (isNewBlock)
+                        if (currentBlock.Length > 0)
                         {
-                            blocks.Add(currentBlock.ToString());
+                            yield return currentBlock.ToString();
                             currentBlock.Clear();
                         }
-                        isNewBlock = true;
                     }
-                    if (isNewBlock)
-                    {
-                        currentBlock.AppendLine(line);
-                    }
+                    currentBlock.AppendLine(line);
                 }
+               
 
                 if (currentBlock.Length > 0)
                 {
-                    blocks.Add(currentBlock.ToString());
+                    yield return currentBlock.ToString();
                 }
             }
-
-            return blocks;
         }
 
         /// <summary>
